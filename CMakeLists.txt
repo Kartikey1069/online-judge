@@ -13,6 +13,8 @@ add_executable(
     oj_runner
     src/main.cpp
     src/runner/process_runner.cpp
+    src/judge/judge.cpp
+    src/verdict/verdict.cpp
 
 )
 

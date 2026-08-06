@@ -2,6 +2,6 @@
 
 int main()
 {
-    std::cout << "Hello from solution!\n";
-    return 42;
+    std::cout << "made the first engine \n";
+    return 0;
 }

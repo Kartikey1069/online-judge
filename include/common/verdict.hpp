@@ -1,4 +1,7 @@
 #pragma once 
+
+#include <ostream>
+
 enum class Verdict
 {
     Accepted,
@@ -9,3 +12,7 @@ enum class Verdict
     CompilationError,
     InternalError
 };
+
+std::string to_string(Verdict verdict);
+
+std::ostream& operator<<(std::ostream&, Verdict);
