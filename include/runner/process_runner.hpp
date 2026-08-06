@@ -6,7 +6,6 @@
 
 class ProcessRunner
 {
-
     public:
         ExecutionResult run(const std::string& executable_path);
 };
