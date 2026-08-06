@@ -4,9 +4,10 @@
 #include <sys/wait.h>    // waitpid
 #include <cstring>        // strlen
 #include <iostream>
-#include<cstdio>
+#include <cstdio>
+#include <vector>
 
-ExecutionResult ProcessRunner::run(const std::string& executable_path){
+ExecutionResult ProcessRunner::run(const std::string& executable_path,const std::vector<std::string>& args){
     int pipefd[2];
     ExecutionResult result{};
     result.exit_code=-1;
@@ -26,11 +27,13 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path){
             _exit(1);
         }
         close(pipefd[1]);
-        char* args[] ={
-            const_cast<char*>(executable_path.c_str()),
-            nullptr
-        };
-        if(execvp(args[0],args)==-1){
+        std::vector<char*>argsv;
+        argsv.push_back(const_cast<char*>(executable_path.c_str()));
+        for(auto it:args){
+            argsv.push_back(const_cast<char*>(it.c_str()));
+        }
+        argsv.push_back(nullptr);
+        if(execvp(argsv[0],argsv.data())==-1){
             perror("exec failed");
             _exit(1);
         }

@@ -8,12 +8,12 @@ SubmissionResult SubmissionService::evaluate(const std::string& solution_path,co
     Judge judge;
     SubmissionResult result;
     ExecutionResult execution_result =
-    runner.run(solution_path);
+    runner.run("ls",{"-l","-a"});
 
     JudgeResult judge_result = judge.evaluate(execution_result,expected_output);
 
     result.execution_result = execution_result;
     result.judge_result = judge_result;
-    std::cout<<result.judge_result.verdict<<"\n";
+    std::cout<<result.execution_result.stdout_output<<"\n";
     return result;
 }
