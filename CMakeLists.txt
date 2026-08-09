@@ -16,6 +16,7 @@ add_executable(
     src/judge/judge.cpp
     src/verdict/verdict.cpp
     src/submission/submission.cpp
+    src/compiler/compiler.cpp
 
 )
 
