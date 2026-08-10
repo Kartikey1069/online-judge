@@ -6,9 +6,7 @@ int main(){
     std::cout<<"Online Judge started.\n";
 
     SubmissionService service;
-    SubmissionResult result=service.evaluate("../tests/solution.cpp","made the first engine \n");
-    
-    
-    
+    SubmissionResult result=service.evaluate("../tests/solution.cpp","5","10 20 30 40\n");
+    std::cout<<"Judge Terminated.\n";    
     return 0;
 }

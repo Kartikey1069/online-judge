@@ -1,7 +1,14 @@
 #include <iostream>
 
-int main()
-{
-    std::cout << "made the first engine \n";
+int main() {
+    int x;
+    int sum = 0;
+
+    while (std::cin >> x) {
+        sum += x;
+    }
+
+    std::cout << "Sum = " << sum << '\n';
+
     return 0;
 }
