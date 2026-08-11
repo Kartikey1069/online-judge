@@ -5,19 +5,30 @@
 #include "compiler/compiler.hpp"
 
 
-SubmissionResult SubmissionService::evaluate(const std::string& solution_path,const std::string& expected_output,const std::string& input){
+SubmissionResult SubmissionService::evaluate(const std::string& solution_path,const TestSuite& testsuite){
     ProcessRunner runner;
     Judge judge;
     Compiler compiler;
     SubmissionResult result;
-    ExecutionResult execution_result;
-    const std::string output_file = "../tests/solution";
-    CompileResult compile_result = compiler.compile(solution_path,output_file);
-    std::cout<<"completed compilation\n";
-    if(compile_result.exit_code == 0){
-        execution_result = runner.run(output_file,{},input);
-    }
+    TestRunner testrunner(runner,judge);
+    TestRunnerResult runner_result;
 
+    const std::string output_file = "../tests/solution";
+
+    CompileResult compile_result = compiler.compile(solution_path,output_file);
+    result.compile_result = compile_result; 
+
+
+    if(compile_result.exit_code == 0){
+        runner_result = testrunner.run(output_file,testsuite);
+        result.test_runner_result = runner_result;
+        if(runner_result.failed_test_index.has_value()){
+           result.verdict = runner_result.failed_judge_result->verdict;
+        }
+        else{
+            result.verdict = Verdict::Accepted; 
+        }
+    }
     else{
         std::cout<<"compilation failed\n";
         std::cout<<compile_result.stderr_output;
@@ -26,14 +37,7 @@ SubmissionResult SubmissionService::evaluate(const std::string& solution_path,co
         return result;
     }
     
-
-    JudgeResult judge_result = judge.evaluate(execution_result,expected_output);
-    result.compile_result = compile_result; 
-    result.execution_result = execution_result;
-    result.judge_result = judge_result;
     
-    std::cout << execution_result.stdout_output << '\n';
-
     result.verdict = judge_result.verdict;
     
     return result;
