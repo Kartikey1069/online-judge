@@ -6,7 +6,7 @@
 
 struct ExecutionResult
 {
-    int exit_code = -1;
+    int exit_code = 1;
 
     std::string stdout_output;
 

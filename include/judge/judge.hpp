@@ -10,7 +10,7 @@
 class Judge
 {
 public:
-    JudgeResult evaluate(
+    JudgeResult evaluate (
         const ExecutionResult& execution,
-        const std::string& expected_output);
+        const std::string& expected_output)const;
 };

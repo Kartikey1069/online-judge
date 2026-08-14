@@ -38,7 +38,5 @@ SubmissionResult SubmissionService::evaluate(const std::string& solution_path,co
     }
     
     
-    result.verdict = judge_result.verdict;
-    
     return result;
 }

@@ -13,12 +13,12 @@
 
 constexpr std::size_t IO_BUFFER_SIZE = 4096;
 
-ExecutionResult ProcessRunner::run(const std::string& executable_path,const std::vector<std::string>& args,const std::string& input){
+ExecutionResult ProcessRunner::run(const std::string& executable_path,const std::vector<std::string>& args,const std::string& input)const{
     int stdin_pipe[2];
     int stdout_pipe[2];
     int stderr_pipe[2];
     ExecutionResult result{};
-    result.exit_code=-1;
+    result.exit_code=1;
     if(pipe(stdin_pipe) == -1){
         return result;
     }
@@ -94,11 +94,11 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
             fds[0].fd = -1;
     }
 
-    std::cout<<"polling starting\n";
+    
     int ready;
     while(!child_exited || stdin_open || stdout_open || stderr_open){
         
-        std::cout << "before poll\n";
+       
 
        if(stdin_open || stdout_open || stderr_open){
             do {
@@ -107,11 +107,11 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
 
             
 
-            std::cout << "after poll\n";
+            
             if(ready == -1){
                 return result;
             }
-            std::cout<<"polling done\n";
+
             if(stdin_open){
                 if(fds[0].revents & POLLOUT){
                     std::size_t remaining = input.size()-input_offset;
@@ -120,16 +120,16 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
                     do{
                         bytes_written = write(stdin_pipe[1],input.data()+input_offset,chunk_size);
                     } while(bytes_written == -1  && errno == EINTR);
-                    std::cout<<"writecompleted\n";
+                   
                     if(bytes_written == -1 ){
                         return result; 
                     }
                     input_offset+=bytes_written;
                     if(input.size() == input_offset){
                         stdin_open=false;
-                        std::cout << "ALL INPUT WRITTEN — CLOSING STDIN PIPE\n";
+                       
                         close(stdin_pipe[1]);
-                        std::cout<<"Closing pipe\n";
+                        
                         fds[0].fd = -1;
                     }
                 }
@@ -155,9 +155,9 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
                     }
                     if(bytes_out == 0){
                         stdout_open = false;
-                        std::cout << "ALL output read — CLOSING STDout PIPE\n";
+                        
                         close(stdout_pipe[0]);
-                        std::cout<<"Closing pipe\n";
+                       
                         fds[1].fd = -1 ;
                         
                     }
@@ -188,9 +188,9 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
                     }
                     if(bytes_err == 0){
                         stderr_open = false;
-                        std::cout << "ALL output read — CLOSING STDerr PIPE\n";
+
                         close(stderr_pipe[0]);
-                        std::cout<<"Closing pipe\n";
+                        
                         fds[2].fd = -1;
                     }
                     else{
@@ -201,7 +201,7 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
 
             }
         }
-        std::cout << "before waitpid\n";
+        
 
         pid_t wait_result;
 
@@ -209,24 +209,27 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
             wait_result = waitpid(pid, &status, WNOHANG);
         } while (wait_result == -1 && errno == EINTR);
 
-        std::cout << "after waitpid: " << wait_result
-                << " errno=" << errno << '\n';
+
         if(wait_result == -1){
             return result ;
         }
         if(wait_result == pid){
-            std::cout<<"child finished\n";
+          
             child_exited = true;
         }
     }    
     
-    std::cout<<"polling completed\n";
+   
     if(WIFEXITED(status)){
         result.exit_code=WEXITSTATUS(status);
+    }
+    else if (WIFSIGNALED(status)) {
+    result.terminated_by_signal = true;
+    result.signal_number = WTERMSIG(status);
     }
 
     result.stdout_output=stdout_output;
     result.stderr_output=stderr_output;
-    std::cout<<"returning\n";
+    
     return  result;
 }

@@ -6,7 +6,7 @@
 
 JudgeResult Judge::evaluate(
     const ExecutionResult& execution,
-    const std::string& expected_output){
+    const std::string& expected_output)const {
         JudgeResult result;
         if(execution.exit_code != 0){
             result.verdict = Verdict::RuntimeError;
