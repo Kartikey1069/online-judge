@@ -6,11 +6,13 @@
 
 #include "common/execution_result.hpp"
 
+#include "judge/i_judge.hpp"
 
-class Judge
+
+class Judge: public IJudge
 {
 public:
     JudgeResult evaluate (
         const ExecutionResult& execution,
-        const std::string& expected_output)const;
+        const std::string& expected_output)const override;
 };

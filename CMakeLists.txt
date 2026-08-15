@@ -30,7 +30,8 @@ add_executable(
     tests/testcase/testsuite_test.cpp
     tests/judge/judge_test.cpp
     tests/runner/process_runner_test.cpp
-     tests/support/fixture.cpp
+    tests/support/fixture.cpp
+    tests/testrunner/testrunner_test.cpp
 )
 
 add_executable(
@@ -113,11 +114,13 @@ target_link_libraries(
     oj_core
     GTest::gtest_main
     GTest::gtest
+    GTest::gmock
+    GTest::gmock_main
 )
 target_include_directories(
     oj_tests
     PRIVATE
-    tests 
+    tests
 )
 
 

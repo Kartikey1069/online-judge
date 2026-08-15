@@ -2,7 +2,7 @@
 
 
 
-TestRunner::TestRunner(const ProcessRunner& runner,const Judge& judge)
+TestRunner::TestRunner(const IProcessRunner& runner,const IJudge& judge)
 :runner (runner),judge(judge)
 {}
         
