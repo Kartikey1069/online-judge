@@ -1,19 +1,27 @@
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
-
-
 #include "testrunner/testrunner.hpp"
-
 #include "mocks/mock_process_runner.hpp"
-
 #include "mocks/mock_judge.hpp"
-
+#include "common/execution_limits.hpp"
+#include <chrono>
 
 
 using testing::_;
 using testing::AllOf;
 using testing::Field;
 using testing::Return;
+
+
+namespace {
+
+const ExecutionLimits test_limits{
+    .cpu_limit = std::chrono::seconds(5),
+    .wall_limit = std::chrono::seconds(10),
+    .memory_limit = std::size_t(1ULL * 1024 * 1024 * 1024)
+};
+
+}
 
 TEST(TestRunner,AllTestCasesAccepted){
     TestCase test1{
@@ -50,7 +58,7 @@ TEST(TestRunner,AllTestCasesAccepted){
     judge1.verdict = Verdict::Accepted;
 
 
-    EXPECT_CALL(mock_runner,run("solution",std::vector<std::string>{},"0\n")).WillOnce(testing::Return(execution0));
+    EXPECT_CALL(mock_runner,run("solution",std::vector<std::string>{},"0\n",test_limits)).WillOnce(testing::Return(execution0));
     
     EXPECT_CALL(
         mock_judge,
@@ -64,7 +72,7 @@ TEST(TestRunner,AllTestCasesAccepted){
     )
     .WillOnce(testing::Return(judge0));
 
-    EXPECT_CALL(mock_runner,run("solution",std::vector<std::string>{},"1\n")).WillOnce(testing::Return(execution1));
+    EXPECT_CALL(mock_runner,run("solution",std::vector<std::string>{},"1\n",test_limits)).WillOnce(testing::Return(execution1));
     
     EXPECT_CALL(
         mock_judge,
@@ -80,7 +88,7 @@ TEST(TestRunner,AllTestCasesAccepted){
     
 
     TestRunner runner(mock_runner,mock_judge);
-    TestRunnerResult result = runner.run("solution",testsuite);
+    TestRunnerResult result = runner.run("solution",testsuite,test_limits);
 
     EXPECT_FALSE(result.failed_test_index.has_value());
     EXPECT_FALSE(result.failed_execution_result.has_value());
@@ -117,7 +125,7 @@ TEST(TestRunner, StopsOnFirstFailure) {
 
     EXPECT_CALL(
         mock_runner,
-        run("solution", std::vector<std::string>{}, "0\n")
+        run("solution", std::vector<std::string>{}, "0\n",test_limits)
     ).WillOnce(Return(execution0));
 
     EXPECT_CALL(
@@ -133,7 +141,7 @@ TEST(TestRunner, StopsOnFirstFailure) {
 
     EXPECT_CALL(
         mock_runner,
-        run("solution", std::vector<std::string>{}, "1\n")
+        run("solution", std::vector<std::string>{}, "1\n",test_limits)
     ).WillOnce(Return(execution1));
 
     EXPECT_CALL(
@@ -150,7 +158,7 @@ TEST(TestRunner, StopsOnFirstFailure) {
     TestRunner runner(mock_runner, mock_judge);
 
     TestRunnerResult result =
-        runner.run("solution", testsuite);
+        runner.run("solution", testsuite,test_limits);
 
     EXPECT_TRUE(result.failed_test_index.has_value());
     EXPECT_EQ(result.failed_test_index.value(), 1);
@@ -184,7 +192,7 @@ TEST(TestRunner, PreservesFailedTestDetails) {
 
     EXPECT_CALL(
         mock_runner,
-        run("solution", std::vector<std::string>{}, "0\n")
+        run("solution", std::vector<std::string>{}, "0\n",test_limits)
     ).WillOnce(Return(execution0));
 
     EXPECT_CALL(
@@ -194,7 +202,7 @@ TEST(TestRunner, PreservesFailedTestDetails) {
 
     EXPECT_CALL(
         mock_runner,
-        run("solution", std::vector<std::string>{}, "1\n")
+        run("solution", std::vector<std::string>{}, "1\n",test_limits)
     ).WillOnce(Return(failed_execution));
 
     EXPECT_CALL(
@@ -212,7 +220,7 @@ TEST(TestRunner, PreservesFailedTestDetails) {
     TestRunner runner(mock_runner, mock_judge);
 
     TestRunnerResult result =
-        runner.run("solution", testsuite);
+        runner.run("solution", testsuite,test_limits);
 
     EXPECT_TRUE(result.failed_test_index.has_value());
     EXPECT_EQ(result.failed_test_index.value(), 1);
@@ -267,7 +275,7 @@ TEST(TestRunner, DoesNotExecuteTestsAfterFailure) {
 
     EXPECT_CALL(
         mock_runner,
-        run("solution", std::vector<std::string>{}, "0\n")
+        run("solution", std::vector<std::string>{}, "0\n",test_limits)
     ).WillOnce(Return(execution0));
 
     EXPECT_CALL(
@@ -277,7 +285,7 @@ TEST(TestRunner, DoesNotExecuteTestsAfterFailure) {
 
     EXPECT_CALL(
         mock_runner,
-        run("solution", std::vector<std::string>{}, "1\n")
+        run("solution", std::vector<std::string>{}, "1\n",test_limits)
     ).WillOnce(Return(execution1));
 
     EXPECT_CALL(
@@ -288,7 +296,7 @@ TEST(TestRunner, DoesNotExecuteTestsAfterFailure) {
   
     EXPECT_CALL(
         mock_runner,
-        run("solution", std::vector<std::string>{}, "2\n")
+        run("solution", std::vector<std::string>{}, "2\n",test_limits)
     ).Times(0);
 
     EXPECT_CALL(
@@ -299,7 +307,7 @@ TEST(TestRunner, DoesNotExecuteTestsAfterFailure) {
     TestRunner runner(mock_runner, mock_judge);
 
     TestRunnerResult result =
-        runner.run("solution", testsuite);
+        runner.run("solution", testsuite,test_limits);
 
     EXPECT_TRUE(result.failed_test_index.has_value());
     EXPECT_EQ(result.failed_test_index.value(), 1);
@@ -323,17 +331,17 @@ TEST(TestRunner, PassesCorrectInputToProcessRunner) {
 
     EXPECT_CALL(
         mock_runner,
-        run("solution", std::vector<std::string>{}, "apple\n")
+        run("solution", std::vector<std::string>{}, "apple\n",test_limits)
     ).WillOnce(Return(execution));
 
     EXPECT_CALL(
         mock_runner,
-        run("solution", std::vector<std::string>{}, "banana\n")
+        run("solution", std::vector<std::string>{}, "banana\n",test_limits)
     ).WillOnce(Return(execution));
 
     EXPECT_CALL(
         mock_runner,
-        run("solution", std::vector<std::string>{}, "cherry\n")
+        run("solution", std::vector<std::string>{}, "cherry\n",test_limits)
     ).WillOnce(Return(execution));
 
     EXPECT_CALL(
@@ -343,7 +351,7 @@ TEST(TestRunner, PassesCorrectInputToProcessRunner) {
 
     TestRunner runner(mock_runner, mock_judge);
 
-    runner.run("solution", testsuite);
+    runner.run("solution", testsuite,test_limits);
 }
 
 
@@ -365,7 +373,7 @@ TEST(TestRunner, PassesCorrectExpectedOutputToJudge) {
 
     EXPECT_CALL(
         mock_runner,
-        run("solution", std::vector<std::string>{}, _)
+        run("solution", std::vector<std::string>{}, _,test_limits)
     ).Times(3).WillRepeatedly(Return(execution));
 
     EXPECT_CALL(
@@ -385,7 +393,7 @@ TEST(TestRunner, PassesCorrectExpectedOutputToJudge) {
 
     TestRunner runner(mock_runner, mock_judge);
 
-    runner.run("solution", testsuite);
+    runner.run("solution", testsuite,test_limits);
 }
 
 
@@ -397,7 +405,7 @@ TEST(TestRunner, HandlesEmptyTestSuite) {
 
     EXPECT_CALL(
         mock_runner,
-        run(_, _, _)
+        run(_, _, _,test_limits)
     ).Times(0);
 
     EXPECT_CALL(
@@ -408,7 +416,7 @@ TEST(TestRunner, HandlesEmptyTestSuite) {
     TestRunner runner(mock_runner, mock_judge);
 
     TestRunnerResult result =
-        runner.run("solution", testsuite);
+        runner.run("solution", testsuite,test_limits);
 
     EXPECT_FALSE(result.failed_test_index.has_value());
     EXPECT_FALSE(result.failed_execution_result.has_value());
@@ -433,7 +441,7 @@ TEST(TestRunner, PreservesRuntimeErrorVerdict) {
 
     EXPECT_CALL(
         mock_runner,
-        run("solution", std::vector<std::string>{}, "input\n")
+        run("solution", std::vector<std::string>{}, "input\n",test_limits)
     ).WillOnce(Return(execution));
 
     EXPECT_CALL(
@@ -444,7 +452,7 @@ TEST(TestRunner, PreservesRuntimeErrorVerdict) {
     TestRunner runner(mock_runner, mock_judge);
 
     TestRunnerResult result =
-        runner.run("solution", testsuite);
+        runner.run("solution", testsuite,test_limits);
 
     EXPECT_TRUE(result.failed_judge_result.has_value());
 

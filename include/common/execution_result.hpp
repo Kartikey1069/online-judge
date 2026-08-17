@@ -12,11 +12,11 @@ struct ExecutionResult
 
     std::string stderr_output;
 
-    std::chrono::milliseconds execution_time{0};
-
-    std::size_t memory_used = 0;
+    std::chrono::milliseconds wall_time{0};
+    std::chrono::microseconds cpu_time{0};
+    std::size_t memory_usage_bytes{0};
 
     bool terminated_by_signal=false;
-
+    bool wall_time_limit_exceeded=false;
     int signal_number = 0;
 };

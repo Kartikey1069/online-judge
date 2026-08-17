@@ -8,5 +8,5 @@
 class ProcessRunner:public IProcessRunner
 {
     public:
-        ExecutionResult run(const std::string& executable_path,const std::vector<std::string>& args,const std::string& input)const override;
+        ExecutionResult run(const std::string& executable_path,const std::vector<std::string>& args,const std::string& input,const ExecutionLimits& limits)const override;
 };

@@ -5,7 +5,7 @@
 #include "compiler/compiler.hpp"
 
 
-SubmissionResult SubmissionService::evaluate(const std::string& solution_path,const TestSuite& testsuite){
+SubmissionResult SubmissionService::evaluate(const std::string& solution_path,const TestSuite& testsuite,const ExecutionLimits& limits){
     ProcessRunner runner;
     Judge judge;
     Compiler compiler;
@@ -20,7 +20,7 @@ SubmissionResult SubmissionService::evaluate(const std::string& solution_path,co
 
 
     if(compile_result.exit_code == 0){
-        runner_result = testrunner.run(output_file,testsuite);
+        runner_result = testrunner.run(output_file,testsuite,limits);
         result.test_runner_result = runner_result;
         if(runner_result.failed_test_index.has_value()){
            result.verdict = runner_result.failed_judge_result->verdict;

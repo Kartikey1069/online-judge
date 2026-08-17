@@ -7,5 +7,5 @@
 class SubmissionService{
 
     public:
-       SubmissionResult evaluate(const std::string& solution_path,const TestSuite& testsuite);
+       SubmissionResult evaluate(const std::string& solution_path,const TestSuite& testsuite,const ExecutionLimits& limits);
 };

@@ -11,7 +11,15 @@
 CompileResult Compiler::compile(const std::string& source_file,const std::string& output_file){
         ProcessRunner runner;
         const std::vector<std::string>args={source_file,"-o",output_file};
-        ExecutionResult execute = runner.run("g++",args,"");
+
+
+        ExecutionLimits compile_limits{
+            .cpu_limit = std::chrono::seconds(30),
+            .wall_limit = std::chrono::seconds(60),
+            .memory_limit = 1ULL * 1024 * 1024 * 1024
+        };
+
+        ExecutionResult execute = runner.run("g++",args,"",compile_limits);
         CompileResult result;
         result.exit_code = execute.exit_code; 
         result.stderr_output = execute.stderr_output;

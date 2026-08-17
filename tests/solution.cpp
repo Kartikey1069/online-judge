@@ -2,13 +2,9 @@
 
 int main() {
     int x;
-    int sum = 0;
+    std::cin>>x;
 
-    while (std::cin >> x) {
-        sum += x;
-    }
-
-    std::cout << "Sum = " << sum << '\n';
+    std::cout << x<<"\n";
 
     return 0;
 }

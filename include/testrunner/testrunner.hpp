@@ -5,6 +5,7 @@
 #include "judge/i_judge.hpp"
 #include "testrunner/testrunner_result.hpp"
 
+
 class TestRunner{
 
     private:
@@ -12,5 +13,5 @@ class TestRunner{
         const IJudge& judge;
     public:
         TestRunner(const IProcessRunner& runner,const IJudge& judge);
-        TestRunnerResult run(const std::string& executable_path,const TestSuite& testsuite);
+        TestRunnerResult run(const std::string& executable_path,const TestSuite& testsuite,const ExecutionLimits& limits);
 };
