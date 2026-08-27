@@ -3,7 +3,7 @@
 #include "support/fixture.hpp"
 #include <iostream>
 #include <csignal>
-#include "common/execution_limits.hpp"
+#include "common/execution_config.hpp"
 #include <chrono>
 namespace {
 
@@ -15,12 +15,15 @@ const ExecutionLimits test_limits{
 
 }
 
+const ExecutionConfig config{
+    .limit = test_limits
+};
 
 TEST(ProcessRunner, RunsSuccessfulProcess) {
 
     ProcessRunner runner;
 
-    ExecutionResult result = runner.run(getFixturePath("exit_zero"),{},"",test_limits);
+    ExecutionResult result = runner.run(getFixturePath("exit_zero"),{},"",config);
 
     EXPECT_EQ(result.exit_code,0);
 }
@@ -30,7 +33,7 @@ TEST(ProcessRunner, CapturesStdout) {
 
     ProcessRunner runner;
 
-    ExecutionResult result = runner.run(getFixturePath("print_stdout"),{},"",test_limits);
+    ExecutionResult result = runner.run(getFixturePath("print_stdout"),{},"",config);
 
     EXPECT_EQ(result.exit_code,0);
 
@@ -40,7 +43,7 @@ TEST(ProcessRunner, CapturesStdout) {
 
 TEST(ProcessRunner, CapturesStderr) {
     ProcessRunner runner;
-    ExecutionResult result = runner.run(getFixturePath("print_stderr"), {},"",test_limits);
+    ExecutionResult result = runner.run(getFixturePath("print_stderr"), {},"",config);
     EXPECT_EQ(result.exit_code, 0);
     EXPECT_EQ(result.stderr_output, "error\n");
     EXPECT_EQ(result.stdout_output, "");
@@ -49,7 +52,7 @@ TEST(ProcessRunner, CapturesStderr) {
 
 TEST(ProcessRunner, PassesInputToProcess) {
     ProcessRunner runner;
-    ExecutionResult result = runner.run(getFixturePath("echo_stdin"), {},"hello\n",test_limits);
+    ExecutionResult result = runner.run(getFixturePath("echo_stdin"), {},"hello\n",config);
     EXPECT_EQ(result.exit_code, 0);
     EXPECT_EQ(result.stdout_output, "hello\n");
 }
@@ -59,7 +62,7 @@ TEST(ProcessRunner, ReturnsNonZeroExitCode) {
 
 
     ExecutionResult result =
-        runner.run(getFixturePath("exit_nonzero"), {}, "",test_limits);
+        runner.run(getFixturePath("exit_nonzero"), {}, "",config);
 
     EXPECT_EQ(result.exit_code, 42);
 }
@@ -70,7 +73,7 @@ TEST(ProcessRunner, HandlesInvalidExecutable) {
     ProcessRunner runner;
 
     ExecutionResult result =
-        runner.run("/nonexistent/program", {}, "",test_limits);
+        runner.run("/nonexistent/program", {}, "",config);
 
     EXPECT_EQ(result.exit_code, 1);
 }
@@ -85,7 +88,7 @@ TEST(ProcessRunner, CapturesLargeStdout) {
             getFixturePath("large_output"),
             {},
             "",
-            test_limits
+            config
         );
 
     EXPECT_EQ(result.exit_code, 0);
@@ -102,7 +105,7 @@ TEST(ProcessRunner, PassesLargeStdin) {
             getFixturePath("echo_stdin"),
             {},
             input,
-            test_limits
+            config
         );
 
     EXPECT_EQ(result.exit_code, 0);
@@ -117,7 +120,7 @@ TEST(ProcessRunner, HandlesEmptyInput) {
             getFixturePath("echo_stdin"),
             {},
             "",
-            test_limits
+            config
         );
 
     EXPECT_EQ(result.exit_code, 0);
@@ -132,7 +135,7 @@ TEST(ProcessRunner, HandlesEmptyStdout) {
             getFixturePath("exit_zero"),
             {},
             "",
-            test_limits
+            config
         );
 
     EXPECT_EQ(result.exit_code, 0);
@@ -148,7 +151,7 @@ TEST(ProcessRunner, HandlesEmptyStderr) {
             getFixturePath("exit_zero"),
             {},
             "",
-            test_limits
+            config
         );
 
     EXPECT_EQ(result.exit_code, 0);
@@ -163,7 +166,7 @@ TEST(ProcessRunner, CapturesStdoutAndStderrSeparately) {
             getFixturePath("print_both"),
             {},
             "",
-            test_limits
+            config
         );
 
     EXPECT_EQ(result.exit_code, 0);
@@ -179,7 +182,7 @@ TEST(ProcessRunner, PassesArgument) {
     getFixturePath("print_args"),
     {"hello", "world", "42"},
     "",
-    test_limits
+    config
     );
 
     EXPECT_EQ(result.exit_code, 0);
@@ -195,7 +198,7 @@ TEST(ProcessRunner, PreservesOutputWithoutTrailingNewline) {
             getFixturePath("print_no_newline"),
             {},
             "",
-            test_limits
+            config
         );
 
     EXPECT_EQ(result.exit_code, 0);
@@ -210,7 +213,7 @@ TEST(ProcessRunner, CapturesBinaryOutput) {
             getFixturePath("print_binary"),
             {},
             "",
-            test_limits
+            config
         );
 
     std::string expected{'a', '\0', 'b'};
@@ -229,7 +232,7 @@ TEST(ProcessRunner, CapturesLargeStdoutAndStderr) {
             getFixturePath("large_both"),
             {},
             "",
-            test_limits
+            config
         );
 
     std::string expected_stdout(10000, 'o');
@@ -249,7 +252,7 @@ TEST(ProcessRunner, ReportsSignalTermination) {
             getFixturePath("terminate_by_signal"),
             {},
             "",
-            test_limits
+            config
         );
 
     EXPECT_TRUE(result.terminated_by_signal);

@@ -1,16 +1,22 @@
 #include "runner/process_runner.hpp"
+#include "sandbox/sandbox.hpp"
+#include "common/sandbox_protocol.hpp"
 #include <unistd.h>     
 #include <sys/wait.h>    
 #include <cstring>        
 #include <iostream>
 #include <cstdio>
+#include <sys/socket.h>
 #include <vector>
+#include <fcntl.h>
 #include <algorithm>
+#include <atomic>
 #include <poll.h>
 #include <cstddef>
 #include <csignal>
 #include <chrono>
 #include <signal.h>
+#include <csignal>
 #include <sys/resource.h>
 #include <cerrno>
 
@@ -23,42 +29,103 @@ std::chrono::microseconds to_microseconds(const timeval& time ) {
                     + std::chrono::microseconds(time.tv_usec);
 }
 
+class SigpipeGuard {
+    public:
+        SigpipeGuard() {
+            struct sigaction ignore{};
 
+            ignore.sa_handler = SIG_IGN;
+            sigemptyset(&ignore.sa_mask);
+            ignore.sa_flags = 0;
 
+            if (sigaction(SIGPIPE, &ignore, &old_) == -1) {
+                valid_ = false;
+            }
+        }
 
+        ~SigpipeGuard() {
+            if (valid_) {
+                sigaction(SIGPIPE, &old_, nullptr);
+            }
+        }
 
+        bool valid() const {
+            return valid_;
+        }
 
-ExecutionResult ProcessRunner::run(const std::string& executable_path,const std::vector<std::string>& args,const std::string& input,const ExecutionLimits& limits)const{
-    int stdin_pipe[2];
-    int stdout_pipe[2];
-    int stderr_pipe[2];
+    private:
+        struct sigaction old_{};
+        bool valid_ = true;
+};
+
+ExecutionResult ProcessRunner::run(const std::string& executable_path,const std::vector<std::string>& args,const std::string& input,const ExecutionConfig& config)const{
+    
+    static std::atomic<std::uint64_t> next_execution_id(1);
+
+    const std::uint64_t execution_id = next_execution_id.fetch_add(1);
     ExecutionResult result{};
     
     result.exit_code=1;
+    SigpipeGuard sigpipe_guard;
+    if(!sigpipe_guard.valid()) {
+        result.status = ExecutionStatus::RunnerFailure;
+        return  result;
+    }
+
+    int stdin_pipe[2];
+    int stdout_pipe[2];
+    int stderr_pipe[2];
+
+    int control_socket[2];
+
+    
+
+    
+    
+    if(socketpair(AF_UNIX,SOCK_STREAM | SOCK_CLOEXEC,0,control_socket) == -1){
+        
+        return result;
+    }
+
     if(pipe(stdin_pipe) == -1){
+        close(control_socket[0]);
+        close(control_socket[1]);
+        result.status = ExecutionStatus::RunnerFailure;
         return result;
     }
     if(pipe(stdout_pipe)==-1){
+        close(control_socket[0]);
+        close(control_socket[1]);
+
         close(stdin_pipe[0]);
         close(stdin_pipe[1]);
+        result.status = ExecutionStatus::RunnerFailure;
         return result;
     }
     if(pipe(stderr_pipe)==-1){
+        close(control_socket[0]);
+        close(control_socket[1]);
+
+
         close(stdin_pipe[0]);
         close(stdin_pipe[1]);
 
         close(stdout_pipe[0]);
         close(stdout_pipe[1]);
+        result.status = ExecutionStatus::RunnerFailure;
         return result;
     }
 
     auto start_time = std::chrono::steady_clock::now();
 
-    const auto deadline = start_time + limits.wall_limit;
+    const auto deadline = start_time + config.limit.wall_limit;
 
-    pid_t pid=fork();
+    pid_t supervisor_pid = fork();
     
-    if(pid==-1){
+    if(supervisor_pid==-1){
+        close(control_socket[0]);
+        close(control_socket[1]);
+
         close(stdin_pipe[0]);
         close(stdin_pipe[1]);
 
@@ -67,102 +134,488 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
 
         close(stderr_pipe[0]);
         close(stderr_pipe[1]);
-
+        result.status = ExecutionStatus::RunnerFailure;
         return result;
     }
-    else if(pid==0){
+    else if(supervisor_pid==0){
+        
+        close(control_socket[0]);
+        
         close(stdout_pipe[0]);
         close(stderr_pipe[0]);
         close(stdin_pipe[1]);
-        if(dup2(stdin_pipe[0],STDIN_FILENO) == -1){
-            perror("dup2 for stdin failed");
-            _exit(1);
-        }
-        if(dup2(stderr_pipe[1],STDERR_FILENO) == -1){
-            perror("dup2 for stderr failed");
-            _exit(1);
-        }
-        if (dup2(stdout_pipe[1], STDOUT_FILENO) == -1){
-            perror("dup2 for stdout failed");
-            _exit(1);
-        }
-
-        close(stderr_pipe[1]);
-        close(stdout_pipe[1]);
-        close(stdin_pipe[0]);
-        
-      
-        std::vector<char*>argsv;
-        argsv.push_back(const_cast<char*>(executable_path.c_str()));
-        for(const auto& it:args){
-            argsv.push_back(const_cast<char*>(it.c_str()));
-        }
-        argsv.push_back(nullptr);
 
 
-        //setting process group 
-        if(setpgid(0, 0)==-1){
-            perror("process group setup failed ");
-            _exit(1);
+        //supervisor from here
+        SandboxExecutionContext context {
+            .stdin_fd = stdin_pipe[0],
+            .stdout_fd = stdout_pipe[1],
+            .stderr_fd = stderr_pipe[1],
+            .control_fd = control_socket[1],
+            .status_fd = -1
+        };
+        SandboxExecutionSpec spec {
+            .executable_path = executable_path,
+            .args = args,
+            .cpu_limit = config.limit.cpu_limit,
+            .memory_limit = config.limit.memory_limit
         };
 
-        struct rlimit time_limit{};
+        Sandbox sandbox(config.sandbox);
+        
+        SandboxSetupResult setup =sandbox.prepareEnvironment(control_socket[1],execution_id);
+        
+        if(!setup.success){
+            perror("sanbox failed");
+            _exit(EXIT_FAILURE);
+        }
+        
+        SandboxProcess process = sandbox.createExecutionProcess(context,spec);
+        
 
-        time_limit.rlim_cur = std::chrono::duration_cast<std::chrono::seconds>(limits.cpu_limit).count();
-        time_limit.rlim_max = time_limit.rlim_cur;
-
-        if(setrlimit(RLIMIT_CPU,&time_limit) == -1){
-            perror("time limit setting failed");
-            _exit(1);
+        if(process.host_pid <= 0) {
+            if (!sandbox.cleanupCgroup()) {
+                close(control_socket[1]);
+                _exit(EXIT_FAILURE);
+            }
+            close(control_socket[1]);
+            _exit(EXIT_FAILURE);
         }
 
+        int status = 0;
+        struct rusage usage{};
+        bool submission_finished = false; 
+        bool  startup_status_open = true;
+        bool startup_failed= false;
+        pid_t waited_pid = -1;
+        
+        const int control_fd = control_socket[1];
+        
+        pollfd poll_fds[2];
+
+        poll_fds[0] = {control_fd,POLLIN,0};
+        poll_fds[1] = {process.status_fd,POLLIN,0};
 
 
-        struct rlimit memory_limit;
+        auto cleanup_supervisor_failure = [&](bool termination_already_attempted) {
+            if (!termination_already_attempted) {
+                if (!sandbox.terminate()) {
+                    // Cgroup termination failed.
+                    // ProcessRunner remains the final containment authority.
+                }
+            }
 
-        memory_limit.rlim_cur = limits.memory_limit;
-        memory_limit.rlim_max = limits.memory_limit;
+            if (kill(process.host_pid, SIGKILL) == -1 &&
+                errno != ESRCH) {
+                // Cannot do anything stronger at this layer.
+            }
 
-        if(setrlimit(RLIMIT_AS,&memory_limit)==-1){
-            perror("memory limit setting failed");
-            _exit(1);
+            int submission_status = 0;
+            struct rusage submission_usage{};
+
+            pid_t waited;
+
+            do {
+                waited = wait4(
+                    process.host_pid,
+                    &submission_status,
+                    0,
+                    &submission_usage
+                );
+            } while (waited == -1 && errno == EINTR);
+
+            if (startup_status_open) {
+                close(process.status_fd);
+                process.status_fd = -1;
+                startup_status_open = false;
+                poll_fds[1].fd = -1;
+            }
+
+            close(control_fd);
+
+            _exit(EXIT_FAILURE);
+        };
+        bool termination_requested = false;
+        const SandboxReadyPayload payload{
+            .host_pid = process.host_pid,
+            .namespace_pid = process.namespace_pid
+        };
+        
+        const bool sent = send_message(control_socket[1],SandboxMessageType::Ready,&payload,sizeof(payload));
+
+        if(!sent) {
+            cleanup_supervisor_failure(termination_requested);
         }
-        if(execvp(argsv[0],argsv.data())==-1){
-            perror("exec failed");
-            _exit(1);
+
+        
+        
+        while(!submission_finished){
+            int poll_result;
+            do{
+
+                poll_result = poll(poll_fds,2,10);
+
+            } while(poll_result == -1 && errno == EINTR);
+            
+            if(poll_result == -1){
+                cleanup_supervisor_failure(termination_requested);
+            }
+
+            if(poll_result > 0 &&  (poll_fds[0].revents & POLLIN)) {
+
+
+                SandboxMessageHeader header {};
+                if(!read_all(control_fd,&header,sizeof(header))) {
+                    cleanup_supervisor_failure(termination_requested);
+                }
+
+                if(header.type == SandboxMessageType::Terminate) {
+                    if(header.payload_size != 0) {
+                        cleanup_supervisor_failure(termination_requested);
+                    }
+
+                    if(!termination_requested) {
+                        if(!sandbox.terminate()) {
+                            cleanup_supervisor_failure(true);
+                        }
+                        termination_requested = true;
+                    }
+                }
+                else{
+                    cleanup_supervisor_failure(termination_requested);
+                }
+            }    
+
+            if (startup_status_open && (poll_fds[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+
+                SandboxSetupFailedPayload failure{};
+
+                const StatusPipeReadResult read_result =
+                    read_setup_failure(process.status_fd, failure);
+
+                if (read_result == StatusPipeReadResult::Payload) {
+
+                    close(process.status_fd);
+                    process.status_fd = -1;
+                    startup_status_open = false;
+                    poll_fds[1].fd = -1;
+
+                    do {
+                        waited_pid =
+                            wait4(process.host_pid, &status, 0, &usage);
+                    } while (waited_pid == -1 && errno == EINTR);
+
+                    if (waited_pid != process.host_pid) {
+                         cleanup_supervisor_failure(termination_requested);
+                    }
+                    if (!sandbox.cleanupCgroup()) {
+                        close(control_fd);
+                        _exit(EXIT_FAILURE);
+                    }
+
+                    const bool sent = send_message(
+                        control_fd,
+                        SandboxMessageType::SetupFailed,
+                        &failure,
+                        sizeof(failure)
+                    );
+
+                    close(control_fd);
+
+                    if (!sent) {
+                        _exit(EXIT_FAILURE);
+                    }
+
+                    _exit(EXIT_FAILURE);
+                }
+
+                if (read_result == StatusPipeReadResult::Eof) {
+
+                    close(process.status_fd);
+                    process.status_fd = -1;
+
+                    startup_status_open = false;
+                    poll_fds[1].fd = -1;
+                }
+
+                if (read_result == StatusPipeReadResult::Error) {
+                    cleanup_supervisor_failure(termination_requested);
+                }
+            }
+            
+            do{
+                (waited_pid = wait4(process.host_pid, &status, WNOHANG,&usage));
+            } while(waited_pid == -1  && errno == EINTR);
+            if(waited_pid == -1) {
+                cleanup_supervisor_failure(termination_requested);
+            }
+            if(waited_pid == process.host_pid) {
+                submission_finished = true;
+                if (startup_status_open) {
+                    close(process.status_fd);
+                    process.status_fd = -1;
+                    startup_status_open = false;
+                    poll_fds[1].fd = -1;
+                }
+                if (!sandbox.cleanupCgroup()) {
+                    close(control_fd);
+                    _exit(EXIT_FAILURE);
+                }
+            }
         }
+       
+
+        if(waited_pid == -1) {
+            const int error_code = errno;
+
+            SandboxSetupFailedPayload payload{
+                SandboxSetupStage::ProcessCreation,
+                error_code
+            };
+
+            send_message(
+                context.control_fd,
+                SandboxMessageType::SetupFailed,
+                &payload,
+                sizeof(payload)
+            );
+
+            close(context.control_fd);
+            _exit(EXIT_FAILURE);
+        }
+
+        SandboxTerminatedPayload terminated{
+            .wait_status = status,
+            .usage = usage 
+        };
+
+        if(!send_message(context.control_fd,SandboxMessageType::Terminated,&terminated,sizeof(terminated))) {
+            close(context.control_fd);
+            _exit(EXIT_FAILURE);
+        }
+        
+        close(context.control_fd);
+        _exit(EXIT_SUCCESS);
 
     }
-    setpgid(pid, pid);
-    pid_t  process_group_id = pid;
+    close(control_socket[1]);
+    auto execution_cgroup_path = [&]() {
+        return std::string("/sys/fs/cgroup/online-judge/execution-")+std::to_string(execution_id);
+    };
+    auto is_execution_cgroup_empty = [&]() -> bool {
+        const std::string path =
+            execution_cgroup_path() + "/cgroup.events";
 
+        const int fd = open(path.c_str(), O_RDONLY);
 
-    auto  terminate_process_group = [&]()-> bool {
-        if(kill(-process_group_id,SIGKILL) == -1){
-            if(errno == ESRCH){
-                return true;
-            }
-            return  false;
+        if (fd == -1) {
+            return false;
         }
+
+        char buffer[256];
+        ssize_t bytes_read;
+
+        do {
+            bytes_read = read(fd, buffer, sizeof(buffer) - 1);
+        } while (bytes_read == -1 && errno == EINTR);
+
+        const int saved_errno = errno;
+        close(fd);
+
+        if (bytes_read == -1) {
+            errno = saved_errno;
+            return false;
+        }
+
+        buffer[bytes_read] = '\0';
+
+        const char* populated = std::strstr(buffer, "populated ");
+
+        if (populated == nullptr) {
+            return false;
+        }
+
+        populated += std::strlen("populated ");
+
+        return *populated == '0';
+    };
+    auto cleanup_execution_cgroup = [&]() -> bool {
+        const std::string path = execution_cgroup_path();
+
+        if (rmdir(path.c_str()) == -1) {
+            return false;
+        }
+
+        return true;
+    };
+    auto kill_execution_cgroup = [&]() -> bool {
+        const std::string path =
+            execution_cgroup_path() + "/cgroup.kill";
+
+        const int fd = open(path.c_str(), O_WRONLY);
+
+        if (fd == -1) {
+            return false;
+        }
+
+        const char value = '1';
+
+        ssize_t written;
+
+        do {
+            written = write(
+                fd,
+                &value,
+                sizeof(value)
+            );
+        } while (
+            written == -1 &&
+            errno == EINTR
+        );
+
+        const int saved_errno = errno;
+
+        close(fd);
+
+        if (written != sizeof(value)) {
+            errno = saved_errno;
+            return false;
+        }
+
         return true;
     };
 
+    auto cleanup_before_ready = [&]() ->bool {
+        if (kill(supervisor_pid, SIGKILL) == -1 &&
+            errno != ESRCH) {
+            // unrecoverable cleanup failure
+        }
+
+        int supervisor_status = 0;
+
+        pid_t waited;
+        do {
+            waited = waitpid(
+                supervisor_pid,
+                &supervisor_status,
+                0
+            );
+        } while (waited == -1 && errno == EINTR);
+        const bool execution_killed = kill_execution_cgroup();
+        if (!execution_killed) {
+            close(control_socket[0]);
+            close(stdin_pipe[1]);
+            close(stdout_pipe[0]);
+            close(stderr_pipe[0]);
+            return false;
+        }
+        
+        constexpr int cgroup_wait_ms = 1000;
+        constexpr int cgroup_poll_ms = 10;
+
+        int elapsed_ms = 0;
+
+        while (elapsed_ms < cgroup_wait_ms) {
+            if (is_execution_cgroup_empty()) {
+                break;
+            }
+
+            usleep(cgroup_poll_ms * 1000);
+            elapsed_ms += cgroup_poll_ms;
+        }
+        if (!is_execution_cgroup_empty()) {
+            close(control_socket[0]);
+            close(stdin_pipe[1]);
+            close(stdout_pipe[0]);
+            close(stderr_pipe[0]);
+            return false;
+           }
+            
+        if (!cleanup_execution_cgroup()) {
+            close(control_socket[0]);
+            close(stdin_pipe[1]);
+            close(stdout_pipe[0]);
+            close(stderr_pipe[0]);
+            return false;
+        }
+
+        close(control_socket[0]);
+        close(stdin_pipe[1]);
+        close(stdout_pipe[0]);
+        close(stderr_pipe[0]);
+        
+        return  true;
+    };
+    SandboxMessageHeader header{};
+    SandboxReadyPayload ready_payload{};
+
+    const bool received = receive_message(
+        control_socket[0],
+        header,
+        &ready_payload,
+        sizeof(ready_payload)
+    );
+
+    if (!received) {
+        cleanup_before_ready();
+
+        result.status = ExecutionStatus::RunnerFailure;
+        return result;
+        
+    }
+
+    if (header.type == SandboxMessageType::SetupFailed) {
+        close(control_socket[0]);
+        int supervisor_status = 0;
+
+        pid_t waited;
+        do {
+            waited = waitpid(
+                supervisor_pid,
+                &supervisor_status,
+                0
+            );
+        } while (waited == -1 && errno == EINTR);
+
+        close(stdin_pipe[1]);
+        close(stdout_pipe[0]);
+        close(stderr_pipe[0]);
+
+        result.status = ExecutionStatus::RunnerFailure;
+        return result;
+    }
+
+    if(header.type != SandboxMessageType::Ready) {
+        cleanup_before_ready();
+        result.status = ExecutionStatus::RunnerFailure;
+        return result;
+    }
+    const pid_t  submission_pid = ready_payload.host_pid;
+    const pid_t namespace_pid = ready_payload.namespace_pid;
+    
 
     close(stdout_pipe[1]);
     close(stderr_pipe[1]);
     close(stdin_pipe[0]);
     
 
-    pollfd fds[3];
-    fds[0]={stdin_pipe[1],POLLOUT,0};
-    fds[1]={stdout_pipe[0],POLLIN,0};
-    fds[2]={stderr_pipe[0],POLLIN,0};
+    pollfd fds[4];
+    fds[0] = {stdin_pipe[1],POLLOUT,0};
+    fds[1] = {stdout_pipe[0],POLLIN,0};
+    fds[2] = {stderr_pipe[0],POLLIN,0};
+    fds[3] = {control_socket[0],POLLIN,0};
+
     char buffer_out[IO_BUFFER_SIZE];
     char buffer_err[IO_BUFFER_SIZE];
     bool stdin_open = true;
     bool stdout_open = true; 
     bool stderr_open = true;
-    bool child_exited = false; 
+    bool termination_requested = false;
+    bool control_channel_open = true;
+    bool supervisor_reaped = false;
+    bool submission_finished = false;
+  
+
     std::string stdout_output="";
     std::string stderr_output="";
     size_t input_offset = 0;
@@ -171,26 +624,7 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
     struct rusage usage{};
     int ready;
 
-
-
-
-    auto reap_child=[&]()-> bool{
-        if(child_exited){
-            return true;
-        }
-        do{wait_result = wait4(pid,&status,0,&usage);
-        
-        }while(wait_result == -1 && errno == EINTR);
-
-        if(wait_result != pid) {
-            return false; 
-        }
-        child_exited = true; 
-     
-        return true;
-    };
-
-
+    
     auto finalize_resource_usage = [&]() {
         auto end_time = std::chrono::steady_clock::now();
 
@@ -204,10 +638,6 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
         result.memory_usage_bytes = 
             static_cast<std::size_t>(usage.ru_maxrss)*1024;
     };
-
-
-
-
     auto close_pipes = [&]() {
         if (stdin_open) {
             close(stdin_pipe[1]);
@@ -230,7 +660,6 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
         }
     };
 
-
     auto finalize_status = [&]() {
         if (WIFEXITED(status)) {
             result.exit_code = WEXITSTATUS(status);
@@ -241,24 +670,160 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
         }
     };
 
-
-
-    auto cleanup_after_failure = [&]() {
-        if (!child_exited) {
-            terminate_process_group();
-
-            if (reap_child()) {
-                finalize_resource_usage();
-                finalize_status();
-            }
+    auto cleanup_after_failure = [&]() -> bool {
+        bool containment_failed = false;
+        bool execution_contained = false;
+        if(stdin_open) {
+            close(stdin_pipe[1]);
+            stdin_open = false;
+            fds[0].fd = -1;
         }
 
-        close_pipes();
+        if(control_channel_open) {
+            const bool sent = send_message(control_socket[0], SandboxMessageType::Terminate,nullptr,0);
+            if(sent) {
+                termination_requested = true;
+            }
+            else{
+                close(control_socket[0]);
+                control_channel_open = false;
+                fds[3].fd = -1;
+            }
+        }
+        
+        if(supervisor_pid > 0) {
+           int supervisor_status = 0;
+           bool supervisor_reaped = false;
+
+           constexpr int cleanup_wait_ms = 1000;
+           constexpr int cleanup_poll_ms = 10;
+           
+           int elapsed_ms = 0;
+
+           while(elapsed_ms < cleanup_wait_ms) {
+                pid_t waited;
+
+                do{
+                    waited =  waitpid(supervisor_pid,&supervisor_status,WNOHANG);
+                } while(waited == -1 && errno == EINTR);
+
+                if(waited == supervisor_pid) {
+                    supervisor_reaped = true;
+                    break;
+                }
+                if(waited == -1) {
+                    break;
+                }
+                
+                usleep(cleanup_poll_ms * 1000);
+                elapsed_ms += cleanup_poll_ms;
+           }
+            const bool execution_killed = kill_execution_cgroup();
+
+            if (!execution_killed) {
+                containment_failed = true;
+            }
+            else {
+                constexpr int cgroup_wait_ms = 1000;
+                constexpr int cgroup_poll_ms = 10;
+
+                int elapsed_ms = 0;
+
+                while (elapsed_ms < cgroup_wait_ms) {
+                    if (is_execution_cgroup_empty()) {
+                        break;
+                    }
+
+                    usleep(cgroup_poll_ms * 1000);
+                    elapsed_ms += cgroup_poll_ms;
+                }
+
+                if (is_execution_cgroup_empty()) {
+                    execution_contained = true;
+                }
+                else {
+                    containment_failed = true;
+                }
+            }
+
+            if (!supervisor_reaped) {
+
+                if (kill(supervisor_pid, SIGKILL) == -1 &&
+                    errno != ESRCH) {
+                    // Cannot do anything stronger at this layer.
+                }
+                pid_t waited;
+                do {
+                    waited =
+                        waitpid(
+                            supervisor_pid,
+                            &supervisor_status,
+                            0
+                        );
+                } while (waited == -1 && errno == EINTR);
+                 if (waited == supervisor_pid) {
+                    supervisor_reaped = true;
+                 
+                }
+
+                if (waited == -1) {
+                    containment_failed = true;
+                 
+                }
+            }
+
+            if (supervisor_reaped && execution_contained) {
+                if (!cleanup_execution_cgroup()) {
+                    containment_failed = true;
+                }
+            }
+            
+        }
+        if (stdout_open) {
+            close(stdout_pipe[0]);
+            stdout_open = false;
+            fds[1].fd = -1;
+        }
+
+        if (stderr_open) {
+            close(stderr_pipe[0]);
+            stderr_open = false;
+            fds[2].fd = -1;
+        }
+
+        if (control_channel_open) {
+            close(control_socket[0]);
+            control_channel_open = false;
+            fds[3].fd = -1;
+        }
+        return !containment_failed;
+    };
+
+    auto finish_supervisor_terminal = [&]() -> bool {
+        if (control_channel_open) {
+            close(control_socket[0]);
+            control_channel_open = false;
+            fds[3].fd = -1;
+        }
+
+        int supervisor_status = 0;
+
+        pid_t waited;
+        do {
+            waited = waitpid(
+                supervisor_pid,
+                &supervisor_status,
+                0
+            );
+        } while (waited == -1 && errno == EINTR);
+
+        if (waited != supervisor_pid) {
+            return false;
+        }
+        supervisor_reaped = true;
+        return true;
     };
    
-
-    
-
     if(input.size() == 0){
             stdin_open=false;
             close(stdin_pipe[1]);
@@ -266,182 +831,187 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
             fds[0].fd = -1;
     }
 
-    
-   
-    
+    while (!submission_finished || stdin_open ||stdout_open || stderr_open ) {
+        const auto now = std::chrono::steady_clock::now();
+        if(!submission_finished && !termination_requested && now>=deadline) {
+            const bool sent = send_message(control_socket[0],SandboxMessageType::Terminate,nullptr,0);
+
+            if(!sent) {
+                cleanup_after_failure();
+                return result;
+            }
+
+            termination_requested = true;
+            result.wall_time_limit_exceeded = true;
+            if(stdin_open) {
+                close(stdin_pipe[1]);
+                stdin_open = false; 
+                fds[0].fd = -1;
+            }
+        }
+
+       
+        int timeout = 0;
         
 
-    while (!child_exited || stdin_open ||stdout_open ||stderr_open) {
-
-        auto now = std::chrono::steady_clock::now();
-
-        if (!child_exited && now >= deadline) {
-
-            // Check whether the child actually finished
-            // before we kill it.
-            do {
-             
-                wait_result = wait4(pid, &status,WNOHANG,&usage);
-             
-            } while (wait_result == -1 && errno == EINTR);
-
-            if (wait_result == -1) {
-
-                // FIX:
-                // The child may still be alive.
-                // Never simply close the pipes and return.
-                // We must terminate/reap the submission first.
-                cleanup_after_failure();
-
-                return result;
+        if(!submission_finished) {
+            if(termination_requested) {
+                timeout = 10;
             }
-
-            // Child won the race.
-            if (wait_result == pid) {
-
-                child_exited = true;
-              
-
-                finalize_resource_usage();
-                finalize_status();
-
-                if (stdin_open) {
-                    close(stdin_pipe[1]);
-
-                    stdin_open = false;
-                    fds[0].fd = -1;
+            else{
+                if( now >= deadline){
+                    timeout = 0;
                 }
-
-                // FIX:
-                // The main submission has exited, but descendants may
-                // still exist and may still hold stdout/stderr pipes.
-                // Kill the remaining submission process group.
-                terminate_process_group();
-            }
-            else if (wait_result == 0) {
-
-                // Child is definitely still running.
-                result.wall_time_limit_exceeded = true;
-                
-
-                if (!terminate_process_group()) {
-                    close_pipes();
-                    return result;
+                else{
+                    const auto remaining = std::chrono::duration_cast <std::chrono::milliseconds>(deadline - now); 
+                    timeout = static_cast<int>(remaining.count());
                 }
-
-                if (!reap_child()) {
-                    close_pipes();
-                    return result;
-                }
-
-                finalize_resource_usage();
-                finalize_status();
-
-                close_pipes();
-                return result;
             }
         }
-
-
-        int timeout;
-
-        if (child_exited) {
-
-            // FIX:
-            // The child is already dead.
-            //
-            // Do NOT wait indefinitely here.
-            //
-            // We only want to observe events that are already pending
-            // on stdout/stderr. If nothing is immediately available,
-            // poll() returns 0 and we go around the loop again.
-            
-            timeout = 0;
-        }
-        else {
-
-            now = std::chrono::steady_clock::now();
-
-            auto remaining =std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
-            timeout = static_cast<int>(remaining.count());
-
-           
-
-
-            // Avoid passing a negative timeout to poll.
-            if (timeout < 0) {
-                timeout = 0;
-            }
-        }
-
-
-        // FIX:
-        // If every descriptor has already been closed and the child
-        // has exited, there is absolutely nothing left to poll.
-        //
-        // The while-condition will terminate naturally, so don't
-        // make an unnecessary poll() call.
-        if (child_exited &&
+        
+        if (submission_finished &&
             !stdin_open &&
             !stdout_open &&
             !stderr_open) {
             break;
         }
-
-        if(stdin_open || stdout_open || stderr_open){
-            do {
+        do {
               
-                ready = poll(fds, 3, timeout);
+            ready = poll(fds, 4, timeout);
            
-            } while (ready == -1 && errno == EINTR);
+        } while (ready == -1 && errno == EINTR);
 
-            if (ready == -1) {
+        if (ready == -1) {
+            cleanup_after_failure();
+            result.status = ExecutionStatus::RunnerFailure;
+            return result;
+        }
+
+            
+        if (control_channel_open &&
+            (fds[3].revents & (POLLIN | POLLERR | POLLHUP))) {
+
+            SandboxMessageHeader header{};
+
+            if (!read_all(
+                    control_socket[0],
+                    &header,
+                    sizeof(header))) {
+
                 cleanup_after_failure();
+                result.status = ExecutionStatus::RunnerFailure;
                 return result;
             }
 
-            // poll() timed out.
-            //
-            // If child is still alive, this means we reached the current
-            // deadline and should go back to the top and check it.
-            //
-            // If child has already exited, timeout == 0 simply means
-            // there are currently no pending pipe events.
-            
+            if (header.type == SandboxMessageType::SetupFailed) {
 
+                SandboxSetupFailedPayload failure{};
 
-            if (stdin_open &&
-                (fds[0].revents & POLLOUT)) {
-
-                std::size_t remaining =
-                    input.size() - input_offset;
-
-                std::size_t chunk_size =
-                    std::min(remaining, IO_BUFFER_SIZE);
-
-                ssize_t bytes_written;
-
-                do {
-                    bytes_written = write(stdin_pipe[1],input.data() + input_offset,chunk_size);
-                } while (bytes_written == -1 &&
-                        errno == EINTR);
-
-                if (bytes_written == -1) {
+                if (header.payload_size != sizeof(failure)) {
                     cleanup_after_failure();
+                    result.status = ExecutionStatus::RunnerFailure;
                     return result;
                 }
 
-                input_offset += bytes_written;
+                if (!read_all(
+                        control_socket[0],
+                        &failure,
+                        sizeof(failure))) {
 
-                if (input_offset == input.size()) {
+                    cleanup_after_failure();
+                    result.status = ExecutionStatus::RunnerFailure;
+                    return result;
+                }
 
+                if (!finish_supervisor_terminal()) {
+                    close_pipes();
+                    result.status = ExecutionStatus::RunnerFailure;
+                    return result;
+                }
+                close_pipes();
+                result.status = ExecutionStatus::RunnerFailure;
+                return result;
+
+                
+            }
+            else if (header.type == SandboxMessageType::Terminated) {
+
+                SandboxTerminatedPayload terminated{};
+
+                if (header.payload_size != sizeof(terminated)) {
+                    cleanup_after_failure();
+                    result.status = ExecutionStatus::RunnerFailure;
+                    return result;
+                }
+
+                if (!read_all(
+                        control_socket[0],
+                        &terminated,
+                        sizeof(terminated))) {
+
+                    cleanup_after_failure();
+                    result.status = ExecutionStatus::RunnerFailure;
+                    return result;
+                }
+
+                status = terminated.wait_status;
+                usage = terminated.usage;
+
+                submission_finished = true;
+                if (!finish_supervisor_terminal()) {
+                    close_pipes();
+                    result.status = ExecutionStatus::RunnerFailure;
+                    return result;
+                }
+                finalize_resource_usage();
+                finalize_status();
+                close_pipes();
+                
+            }
+            else {
+                cleanup_after_failure();
+                result.status = ExecutionStatus::RunnerFailure;
+                return result;
+            }
+        }
+        
+        
+        if(stdin_open && (fds[0].revents & (POLLHUP | POLLERR))) {
+            close(stdin_pipe[1]);
+            stdin_open = false;
+            fds[0].fd = -1;
+        }
+        else if(stdin_open && (fds[0].revents & POLLOUT )){
+
+            std::size_t remaining = input.size() - input_offset;
+            std::size_t chunk_size = std::min(remaining, IO_BUFFER_SIZE);
+            ssize_t bytes_written;
+            do {
+                bytes_written = write(stdin_pipe[1],input.data() + input_offset,chunk_size);
+            } while (bytes_written == -1 && errno == EINTR);
+
+            if (bytes_written == -1) {
+                if(errno == EPIPE){
                     close(stdin_pipe[1]);
-                  
-
                     stdin_open = false;
                     fds[0].fd = -1;
                 }
+                else{
+                    cleanup_after_failure();
+                    result.status = ExecutionStatus::RunnerFailure;
+                    return result;
+                }
+                
             }
+
+            input_offset += bytes_written;
+
+            if (input_offset == input.size()) {
+                close(stdin_pipe[1]);
+                stdin_open = false;
+                fds[0].fd = -1;
+            }
+        }
 
 
             if (stdout_open &&
@@ -456,6 +1026,7 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
 
                 if (bytes_out == -1) {
                     cleanup_after_failure();
+                    result.status = ExecutionStatus::RunnerFailure;
                     return result;
                 }
 
@@ -487,6 +1058,7 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
 
                 if (bytes_err == -1) {
                     cleanup_after_failure();
+                    result.status = ExecutionStatus::RunnerFailure;
                     return result;
                 }
 
@@ -503,51 +1075,39 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
                         bytes_err
                     );
                 }
-            }
-        }
-
-        if (!child_exited) {
-
-            do {
-                
-             
-                wait_result = wait4(pid, &status,WNOHANG,&usage);
-              
-            } while (wait_result == -1 &&
-                    errno == EINTR);
-
-            if (wait_result == -1) {
-
-                // FIX:
-                // Don't abandon a potentially running submission.
-                cleanup_after_failure();
-
-                return result;
-            }
-
-            if (wait_result == pid) {
-
-                child_exited = true;
-            
-                finalize_resource_usage();
-                finalize_status();
-
-                if (stdin_open) {
-                    close(stdin_pipe[1]);
-                   
-                    stdin_open = false;
-                    fds[0].fd = -1;
-                }
-
-               
-                terminate_process_group();
-            }
-        }
+            }    
+        
     }
+    if (!supervisor_reaped) {
+        int supervisor_status = 0;
+
+        pid_t reaped_supervisor;
+        do {
+            reaped_supervisor =
+                waitpid(supervisor_pid, &supervisor_status, 0);
+        } while (reaped_supervisor == -1 && errno == EINTR);
+
+        if (reaped_supervisor == -1) {
+            cleanup_after_failure();
+            result.status = ExecutionStatus::RunnerFailure;
+            return result;
+        }
+
+        supervisor_reaped = true;
+    }
+
    
+    if (result.wall_time_limit_exceeded) {
+        result.status = ExecutionStatus::TimedOut;
+    }
+    else if (WIFSIGNALED(status)) {
+        result.status = ExecutionStatus::Signaled;
+    }
+    else {
+        result.status = ExecutionStatus::Completed;
+    }
     result.stdout_output=stdout_output;
     result.stderr_output=stderr_output;
-    
-    
-    return  result;
+     
+    return result;
 }

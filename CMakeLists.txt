@@ -99,6 +99,8 @@ add_library(
     src/compiler/compiler.cpp
     src/testrunner/testrunner.cpp
     src/testcase/testsuite.cpp
+    src/common/sandbox_protocol.cpp
+    src/sandbox/sandbox.cpp
 )
 
 

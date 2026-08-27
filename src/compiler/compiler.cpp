@@ -18,8 +18,10 @@ CompileResult Compiler::compile(const std::string& source_file,const std::string
             .wall_limit = std::chrono::seconds(60),
             .memory_limit = 1ULL * 1024 * 1024 * 1024
         };
-
-        ExecutionResult execute = runner.run("g++",args,"",compile_limits);
+         
+        ExecutionConfig config;
+        config.limit = compile_limits;
+        ExecutionResult execute = runner.run("g++",args,"",config);
         CompileResult result;
         result.exit_code = execute.exit_code; 
         result.stderr_output = execute.stderr_output;

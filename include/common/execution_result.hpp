@@ -4,8 +4,17 @@
 #include<chrono>
 #include "common/verdict.hpp"
 
+
+enum class ExecutionStatus {
+    Completed,
+    TimedOut,
+    Signaled,
+    SandboxFailure,
+    RunnerFailure
+};
 struct ExecutionResult
 {
+    ExecutionStatus status = ExecutionStatus::RunnerFailure;
     int exit_code = 1;
 
     std::string stdout_output;

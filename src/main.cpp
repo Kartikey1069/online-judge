@@ -23,7 +23,10 @@ int main(){
     .memory_limit= std::size_t(1ULL * 1024 * 1024 * 1024)
     };
 
-    SubmissionResult result = service.evaluate("../tests/solution.cpp",testsuite,test_limits);
+    ExecutionConfig config;
+    config.limit = test_limits;
+
+    SubmissionResult result = service.evaluate("../tests/solution.cpp",testsuite,config);
     std::cout<<"Judge Terminated.\n";    
     return 0;
 }

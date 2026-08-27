@@ -7,12 +7,12 @@ TestRunner::TestRunner(const IProcessRunner& runner,const IJudge& judge)
 {}
         
 
-TestRunnerResult  TestRunner::run(const std::string& executable_path,const TestSuite& testsuite,const ExecutionLimits& limits){
+TestRunnerResult  TestRunner::run(const std::string& executable_path,const TestSuite& testsuite,const ExecutionConfig& config){
     TestRunnerResult  runner_result;
     for(std::size_t i=0; i<testsuite.size();++i){
         const TestCase& test_case = testsuite.getTestCase(i);
 
-        ExecutionResult execution_result = runner.run(executable_path,{},test_case.input,limits);
+        ExecutionResult execution_result = runner.run(executable_path,{},test_case.input,config);
 
         JudgeResult judge_result = judge.evaluate(execution_result,test_case.expected_output);
 
