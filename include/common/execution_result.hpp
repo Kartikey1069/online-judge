@@ -5,6 +5,19 @@
 #include "common/verdict.hpp"
 
 
+enum class ExecutionState {
+    Created,
+    Starting,
+    Running,
+    Finished,
+    TimedOut,
+    Signaled,
+    Failed,
+    SandboxFailed,
+    RunnerFailed,
+    Cancelled
+};
+
 enum class ExecutionStatus {
     Completed,
     TimedOut,
@@ -15,6 +28,7 @@ enum class ExecutionStatus {
 struct ExecutionResult
 {
     ExecutionStatus status = ExecutionStatus::RunnerFailure;
+    ExecutionState state = ExecutionState::Failed;
     int exit_code = 1;
 
     std::string stdout_output;

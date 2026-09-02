@@ -76,10 +76,12 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
     
     const std::uint64_t execution_id = ProcessRunner::generateExecutionId();
     ExecutionResult result{};
+    result.state = ExecutionState::Created;
     
     result.exit_code=1;
     SigpipeGuard sigpipe_guard;
     if(!sigpipe_guard.valid()) {
+        result.state = ExecutionState::RunnerFailed;
         result.status = ExecutionStatus::RunnerFailure;
         return  result;
     }
@@ -95,13 +97,15 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
     
     
     if(socketpair(AF_UNIX,SOCK_STREAM | SOCK_CLOEXEC,0,control_socket) == -1){
-        
+        result.state = ExecutionState::RunnerFailed;
+        result.status = ExecutionStatus::RunnerFailure;
         return result;
     }
 
     if(pipe(stdin_pipe) == -1){
         close(control_socket[0]);
         close(control_socket[1]);
+        result.state = ExecutionState::RunnerFailed;
         result.status = ExecutionStatus::RunnerFailure;
         return result;
     }
@@ -111,6 +115,7 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
 
         close(stdin_pipe[0]);
         close(stdin_pipe[1]);
+        result.state = ExecutionState::RunnerFailed;
         result.status = ExecutionStatus::RunnerFailure;
         return result;
     }
@@ -124,6 +129,7 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
 
         close(stdout_pipe[0]);
         close(stdout_pipe[1]);
+        result.state = ExecutionState::RunnerFailed;
         result.status = ExecutionStatus::RunnerFailure;
         return result;
     }
@@ -148,6 +154,7 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
 
         close(stderr_pipe[0]);
         close(stderr_pipe[1]);
+        result.state = ExecutionState::RunnerFailed;
         result.status = ExecutionStatus::RunnerFailure;
         return result;
     }
@@ -608,6 +615,7 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
     if (!received) {
         cleanup_before_ready();
 
+        result.state = ExecutionState::SandboxFailed;
         result.status = ExecutionStatus::SandboxFailure;
         return result;
         
@@ -630,12 +638,14 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
         close(stdout_pipe[0]);
         close(stderr_pipe[0]);
 
+        result.state = ExecutionState::SandboxFailed;
         result.status = ExecutionStatus::SandboxFailure;
         return result;
     }
 
     if(header.type != SandboxMessageType::Ready) {
         cleanup_before_ready();
+        result.state = ExecutionState::RunnerFailed;
         result.status = ExecutionStatus::RunnerFailure;
         return result;
     }
@@ -1015,6 +1025,7 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
                 submission_finished = true;
                 if (!finish_supervisor_terminal()) {
                     close_pipes();
+                    result.state = ExecutionState::RunnerFailed;
                     result.status = ExecutionStatus::RunnerFailure;
                     return result;
                 }
@@ -1161,12 +1172,15 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
 
    
     if (result.wall_time_limit_exceeded) {
+        result.state = ExecutionState::TimedOut;
         result.status = ExecutionStatus::TimedOut;
     }
     else if (WIFSIGNALED(status)) {
+        result.state = ExecutionState::Signaled;
         result.status = ExecutionStatus::Signaled;
     }
     else {
+        result.state = ExecutionState::Finished;
         result.status = ExecutionStatus::Completed;
     }
     result.stdout_output=stdout_output;

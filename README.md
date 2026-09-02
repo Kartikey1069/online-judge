@@ -42,6 +42,10 @@ structured sandbox IPC
 
 execution IDs for lifecycle/resource correlation
 
+queue-based execution scheduling with bounded admission and queued cancellation
+
+submission worker pools for draining execution backlogs
+
 explicit sandbox setup failure stages
 
 bounded cleanup and failure recovery
@@ -184,6 +188,7 @@ TimedOut
 Signaled
 SandboxFailure
 RunnerFailure
+Cancelled
 
 Sandbox setup failures also identify the stage and underlying error code.
 
@@ -265,6 +270,7 @@ M7  Execution Engine                 ✅
 M8  Resource & Security Foundations  ✅
 M9  Linux Sandbox                    ✅
 M10 Engine Testing & Hardening       ✅
+M11 Execution Scheduling & Orchestration ✅
 
 M10 establishes a freeze point for the local execution engine. Later backend work should build on this execution boundary rather than mixing HTTP/API responsibilities into the low-level process runner.
 
@@ -318,5 +324,7 @@ observability
 performance engineering
 
 production deployment
+
+M11 implementation and validation details are documented in [docs/m11_execution_scheduling_report.md](docs/m11_execution_scheduling_report.md). The privileged cgroup signal path remains host-gated and requires validation on a root-capable Linux host.
 
 The execution layer remains independent of HTTP, browsers, databases, and event transports.

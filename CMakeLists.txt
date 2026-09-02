@@ -30,6 +30,7 @@ add_executable(
     tests/testcase/testsuite_test.cpp
     tests/judge/judge_test.cpp
     tests/runner/process_runner_test.cpp
+    tests/runner/execution_scheduler_test.cpp
     tests/support/fixture.cpp
     tests/testrunner/testrunner_test.cpp
 )

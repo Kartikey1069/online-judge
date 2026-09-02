@@ -49,6 +49,8 @@ TEST(ProcessRunner, RunsSuccessfulProcess) {
     ExecutionResult result = runner.run(getFixturePath("exit_zero"),{},"",config);
 
     EXPECT_EQ(result.exit_code,0);
+    EXPECT_EQ(result.state, ExecutionState::Finished);
+    EXPECT_EQ(result.status, ExecutionStatus::Completed);
 }
 
 
