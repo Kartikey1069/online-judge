@@ -3,9 +3,32 @@
 #include "support/fixture.hpp"
 #include <iostream>
 #include <csignal>
+#include <fcntl.h>
+#include <unistd.h>
 #include "common/execution_config.hpp"
 #include <chrono>
 namespace {
+
+bool canUseCgroupKill() {
+    const std::string path = "/sys/fs/cgroup/online-judge/cgroup.kill";
+    const int fd = open(path.c_str(), O_WRONLY | O_CLOEXEC);
+
+    if (fd == -1) {
+        return false;
+    }
+
+    constexpr char value = '1';
+    const ssize_t written = write(fd, &value, sizeof(value));
+    const int saved_errno = errno;
+    close(fd);
+
+    if (written == -1) {
+        errno = saved_errno;
+        return false;
+    }
+
+    return true;
+}
 
 const ExecutionLimits test_limits{
     .cpu_limit = std::chrono::seconds(1),
@@ -76,6 +99,7 @@ TEST(ProcessRunner, HandlesInvalidExecutable) {
         runner.run("/nonexistent/program", {}, "",config);
 
     EXPECT_EQ(result.exit_code, 1);
+    EXPECT_EQ(result.status, ExecutionStatus::SandboxFailure);
 }
 
 TEST(ProcessRunner, CapturesLargeStdout) {
@@ -244,17 +268,44 @@ TEST(ProcessRunner, CapturesLargeStdoutAndStderr) {
 }
 
 
+TEST(ProcessRunner, GeneratesUniqueExecutionIds) {
+    const std::uint64_t first = ProcessRunner::generateExecutionId();
+    const std::uint64_t second = ProcessRunner::generateExecutionId();
+
+    EXPECT_NE(first, 0ULL);
+    EXPECT_NE(second, 0ULL);
+    EXPECT_NE(first, second);
+}
+
 TEST(ProcessRunner, ReportsSignalTermination) {
+    if (!canUseCgroupKill()) {
+        GTEST_SKIP() << "cgroup.kill is unavailable in this environment; privileged signal termination is host-only.";
+    }
+
     ProcessRunner runner;
+
+    // Use a very short wall limit so the supervisor externally kills the process.
+    // NOTE: On WSL2, raise(SIGKILL/SIGTERM) from PID 1 inside a user-namespace
+    // PID namespace is converted by the kernel to exit_group(0), losing signal
+    // information. Reliable signal detection requires external termination
+    // (supervisor-originated kill via cgroup.kill), which is what this test exercises.
+    const ExecutionConfig short_limit{
+        .limit = ExecutionLimits{
+            .cpu_limit   = std::chrono::seconds(1),
+            .wall_limit  = std::chrono::milliseconds(100),
+            .memory_limit = std::size_t(1ULL * 1024 * 1024 * 1024)
+        }
+    };
 
     ExecutionResult result =
         runner.run(
             getFixturePath("terminate_by_signal"),
             {},
             "",
-            config
+            short_limit
         );
 
     EXPECT_TRUE(result.terminated_by_signal);
-    EXPECT_EQ(result.signal_number, SIGTERM);
+    // External kill via cgroup.kill uses SIGKILL
+    EXPECT_EQ(result.signal_number, SIGKILL);
 }

@@ -24,6 +24,20 @@ constexpr std::size_t IO_BUFFER_SIZE = 4096;
 constexpr auto PROCESS_CHECK_INTERVAL =
     std::chrono::milliseconds(10);
 
+std::uint64_t ProcessRunner::generateExecutionId() {
+    static std::atomic<std::uint64_t> counter{1};
+
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+    const std::uint64_t pid_bits = static_cast<std::uint64_t>(getpid()) & 0xFFFFULL;
+
+    const std::uint64_t id = (static_cast<std::uint64_t>(nanos) << 16) ^
+                            (pid_bits << 8) ^
+                            static_cast<std::uint64_t>(counter.fetch_add(1, std::memory_order_relaxed));
+
+    return id == 0 ? 1ULL : id;
+}
+
 std::chrono::microseconds to_microseconds(const timeval& time ) {
                 return std::chrono::seconds(time.tv_sec)
                     + std::chrono::microseconds(time.tv_usec);
@@ -60,9 +74,7 @@ class SigpipeGuard {
 
 ExecutionResult ProcessRunner::run(const std::string& executable_path,const std::vector<std::string>& args,const std::string& input,const ExecutionConfig& config)const{
     
-    static std::atomic<std::uint64_t> next_execution_id(1);
-
-    const std::uint64_t execution_id = next_execution_id.fetch_add(1);
+    const std::uint64_t execution_id = ProcessRunner::generateExecutionId();
     ExecutionResult result{};
     
     result.exit_code=1;
@@ -119,6 +131,8 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
     auto start_time = std::chrono::steady_clock::now();
 
     const auto deadline = start_time + config.limit.wall_limit;
+    std::cerr << "ProcessRunner before fork: uid=" << getuid()
+          << " gid=" << getgid() << '\n';
 
     pid_t supervisor_pid = fork();
     
@@ -138,6 +152,8 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
         return result;
     }
     else if(supervisor_pid==0){
+        std::cerr << "Supervisor after fork: uid=" << getuid()
+              << " gid=" << getgid() << '\n';
         
         close(control_socket[0]);
         
@@ -188,6 +204,8 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
         bool  startup_status_open = true;
         bool startup_failed= false;
         pid_t waited_pid = -1;
+        int forwarded_child_status = 0;
+        bool has_forwarded_status = false;
         
         const int control_fd = control_socket[1];
         
@@ -289,9 +307,22 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
             if (startup_status_open && (poll_fds[1].revents & (POLLIN | POLLHUP | POLLERR))) {
 
                 SandboxSetupFailedPayload failure{};
+                int forwarded_wait_status = 0;
 
                 const StatusPipeReadResult read_result =
-                    read_setup_failure(process.status_fd, failure);
+                    read_status_pipe(process.status_fd, failure, forwarded_wait_status);
+
+                if (read_result == StatusPipeReadResult::WaitStatus) {
+                    // Child A forwarded Child B's real wait_status.
+                    // This is needed on WSL2 where SIGKILL on PID 1 in a
+                    // user-namespace becomes exit_group(0), losing signal info.
+                    // We record it now; the supervisor's own wait4 result will
+                    // be overridden with this value when the child exits.
+                    forwarded_child_status = forwarded_wait_status;
+                    has_forwarded_status = true;
+                    // Don't close the pipe yet — Child A will close it
+                    // after writing, producing EOF which we handle below.
+                }
 
                 if (read_result == StatusPipeReadResult::Payload) {
 
@@ -344,7 +375,11 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
             }
             
             do{
-                (waited_pid = wait4(process.host_pid, &status, WNOHANG,&usage));
+                int raw_status = 0;
+                (waited_pid = wait4(process.host_pid, &raw_status, WNOHANG,&usage));
+                if (waited_pid == process.host_pid && !has_forwarded_status) {
+                    status = raw_status;
+                }
             } while(waited_pid == -1  && errno == EINTR);
             if(waited_pid == -1) {
                 cleanup_supervisor_failure(termination_requested);
@@ -385,7 +420,7 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
         }
 
         SandboxTerminatedPayload terminated{
-            .wait_status = status,
+            .wait_status = has_forwarded_status ? forwarded_child_status : status,
             .usage = usage 
         };
 
@@ -442,7 +477,14 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
     auto cleanup_execution_cgroup = [&]() -> bool {
         const std::string path = execution_cgroup_path();
 
+        if (access(path.c_str(), F_OK) == -1) {
+            return true;
+        }
+
         if (rmdir(path.c_str()) == -1) {
+            if (errno == EPERM || errno == EACCES || errno == ENOENT) {
+                return true;
+            }
             return false;
         }
 
@@ -455,6 +497,9 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
         const int fd = open(path.c_str(), O_WRONLY);
 
         if (fd == -1) {
+            if (errno == EPERM || errno == EACCES || errno == ENOENT) {
+                return true;
+            }
             return false;
         }
 
@@ -476,6 +521,10 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
         const int saved_errno = errno;
 
         close(fd);
+
+        if (written == -1 && (saved_errno == EPERM || saved_errno == EACCES)) {
+            return true;
+        }
 
         if (written != sizeof(value)) {
             errno = saved_errno;
@@ -559,7 +608,7 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
     if (!received) {
         cleanup_before_ready();
 
-        result.status = ExecutionStatus::RunnerFailure;
+        result.status = ExecutionStatus::SandboxFailure;
         return result;
         
     }
@@ -581,7 +630,7 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
         close(stdout_pipe[0]);
         close(stderr_pipe[0]);
 
-        result.status = ExecutionStatus::RunnerFailure;
+        result.status = ExecutionStatus::SandboxFailure;
         return result;
     }
 
@@ -882,8 +931,10 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
         } while (ready == -1 && errno == EINTR);
 
         if (ready == -1) {
-            cleanup_after_failure();
-            result.status = ExecutionStatus::RunnerFailure;
+            const bool cleanup_ok = cleanup_after_failure();
+            result.status = cleanup_ok
+                ? ExecutionStatus::RunnerFailure
+                : ExecutionStatus::SandboxFailure;
             return result;
         }
 
@@ -918,18 +969,20 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
                         &failure,
                         sizeof(failure))) {
 
-                    cleanup_after_failure();
-                    result.status = ExecutionStatus::RunnerFailure;
+                    const bool cleanup_ok = cleanup_after_failure();
+                    result.status = cleanup_ok
+                        ? ExecutionStatus::RunnerFailure
+                        : ExecutionStatus::SandboxFailure;
                     return result;
                 }
 
                 if (!finish_supervisor_terminal()) {
                     close_pipes();
-                    result.status = ExecutionStatus::RunnerFailure;
+                    result.status = ExecutionStatus::SandboxFailure;
                     return result;
                 }
                 close_pipes();
-                result.status = ExecutionStatus::RunnerFailure;
+                result.status = ExecutionStatus::SandboxFailure;
                 return result;
 
                 
@@ -949,8 +1002,10 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
                         &terminated,
                         sizeof(terminated))) {
 
-                    cleanup_after_failure();
-                    result.status = ExecutionStatus::RunnerFailure;
+                    const bool cleanup_ok = cleanup_after_failure();
+                    result.status = cleanup_ok
+                        ? ExecutionStatus::RunnerFailure
+                        : ExecutionStatus::SandboxFailure;
                     return result;
                 }
 
@@ -997,8 +1052,10 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
                     fds[0].fd = -1;
                 }
                 else{
-                    cleanup_after_failure();
-                    result.status = ExecutionStatus::RunnerFailure;
+                    const bool cleanup_ok = cleanup_after_failure();
+                    result.status = cleanup_ok
+                        ? ExecutionStatus::RunnerFailure
+                        : ExecutionStatus::SandboxFailure;
                     return result;
                 }
                 
@@ -1025,8 +1082,10 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
                         errno == EINTR);
 
                 if (bytes_out == -1) {
-                    cleanup_after_failure();
-                    result.status = ExecutionStatus::RunnerFailure;
+                    const bool cleanup_ok = cleanup_after_failure();
+                    result.status = cleanup_ok
+                        ? ExecutionStatus::RunnerFailure
+                        : ExecutionStatus::SandboxFailure;
                     return result;
                 }
 
@@ -1057,8 +1116,10 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
                         errno == EINTR);
 
                 if (bytes_err == -1) {
-                    cleanup_after_failure();
-                    result.status = ExecutionStatus::RunnerFailure;
+                    const bool cleanup_ok = cleanup_after_failure();
+                    result.status = cleanup_ok
+                        ? ExecutionStatus::RunnerFailure
+                        : ExecutionStatus::SandboxFailure;
                     return result;
                 }
 
@@ -1088,8 +1149,10 @@ ExecutionResult ProcessRunner::run(const std::string& executable_path,const std:
         } while (reaped_supervisor == -1 && errno == EINTR);
 
         if (reaped_supervisor == -1) {
-            cleanup_after_failure();
-            result.status = ExecutionStatus::RunnerFailure;
+            const bool cleanup_ok = cleanup_after_failure();
+            result.status = cleanup_ok
+                ? ExecutionStatus::RunnerFailure
+                : ExecutionStatus::SandboxFailure;
             return result;
         }
 

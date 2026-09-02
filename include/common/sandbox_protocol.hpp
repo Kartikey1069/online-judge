@@ -27,7 +27,13 @@ enum class SandboxMessageType {
 enum class StatusPipeReadResult {
     Payload,
     Eof,
-    Error
+    Error,
+    WaitStatus
+};
+
+struct SandboxWaitStatusPayload {
+    static constexpr std::uint8_t TAG = 0xFF; // magic first byte
+    int wait_status;
 };
 
 struct SandboxMessageHeader {
@@ -73,3 +79,5 @@ bool receive_message(
 bool read_all(int fd, void* buffer, std::size_t size);
 bool write_all(int fd, const void* buffer, std::size_t size);
 StatusPipeReadResult read_setup_failure(int fd,SandboxSetupFailedPayload&);
+bool write_wait_status(int fd, int wait_status);
+StatusPipeReadResult read_status_pipe(int fd, SandboxSetupFailedPayload& failure, int& out_wait_status);

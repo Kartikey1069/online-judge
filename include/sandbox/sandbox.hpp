@@ -38,10 +38,12 @@ public:
 
     SandboxProcess createExecutionProcess(const SandboxExecutionContext& context,const SandboxExecutionSpec& spec);
 
-    SandboxSetupResult finalizeExecutionEnvironment(const SandboxExecutionContext& context);
+    SandboxSetupResult finalizeExecutionEnvironment(const SandboxExecutionContext& context, const SandboxExecutionSpec& spec);
 
     bool terminate();
     bool cleanupCgroup();
+    bool cleanupMounts();
+    bool cleanupRoot();
     SandboxSetupResult addProcessToCgroup(pid_t pid);
 
 private:
@@ -53,5 +55,6 @@ private:
     SandboxSetupResult setupUserNamespace(int control_fd);
     SandboxSetupResult setupCgroup(int control_fd,std::uint64_t execution_id);
     SandboxSetupResult failSetup(int status_fd,SandboxSetupStage stage, int error_code);
+    bool isCgroupEmpty() const;
     [[noreturn]] void execute(const SandboxExecutionContext& context, const SandboxExecutionSpec& spec);
 };

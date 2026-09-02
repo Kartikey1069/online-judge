@@ -1,7 +1,9 @@
-#include <csignal>
+#include <unistd.h>
 
 int main() {
-    std::raise(SIGTERM);
-
+    // Sleep indefinitely. The test runner will kill this via wall time limit.
+    while (true) {
+        pause();
+    }
     return 0;
 }

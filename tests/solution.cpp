@@ -2,9 +2,7 @@
 
 int main() {
     int x;
-    std::cin>>x;
-
-    std::cout << x<<"\n";
-
+    std::cin >> x;
+    std::cout << x << '\n';
     return 0;
 }
